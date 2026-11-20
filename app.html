@@ -2821,6 +2821,8 @@ const UI = (() => {
   /* Ejecuta una acción del Store con manejo de errores */
   function hacer(fn, okMsg, op) { try { const r = fn(); if (okMsg) toast(okMsg, 'ok', op); return r ?? true; } catch (e) { err(e); return false; } }
 
+  /* Cuando se cierra la última ventana o ficha, la pantalla de atrás se actualiza si hubo cambios */
+  function capasCerradas() { if (!pila.length) setTimeout(() => document.dispatchEvent(new Event('capas-cerradas')), 0); }
   function cerrarArriba() { const t = pila[pila.length - 1]; if (t) { t.cerrar(); return true; } return false; }
 
   function modal({ titulo = '', sub = '', ico: ic = null, icoTipo = '', cuerpo = '', pie = '', ancho = '', alAbrir, alCerrar, clase = '', sinCab = false }) {
@@ -2832,7 +2834,7 @@ const UI = (() => {
     const previo = document.activeElement;
     requestAnimationFrame(() => { env.querySelector('.velo').classList.add('vis'); env.querySelector('.modal').classList.add('vis'); });
     const h = { el: env.querySelector('.modal'), cerrado: false,
-      cerrar() { if (h.cerrado) return; h.cerrado = true; pila.splice(pila.indexOf(h), 1); env.querySelector('.velo').classList.remove('vis'); env.querySelector('.modal').classList.remove('vis'); setTimeout(() => env.remove(), 260); alCerrar?.(); previo?.focus?.(); },
+      cerrar() { if (h.cerrado) return; h.cerrado = true; pila.splice(pila.indexOf(h), 1); capasCerradas(); env.querySelector('.velo').classList.remove('vis'); env.querySelector('.modal').classList.remove('vis'); setTimeout(() => env.remove(), 260); alCerrar?.(); previo?.focus?.(); },
       set(html) { h.el.querySelector('.modal-cuerpo').innerHTML = html; },
       pie(html) { let p = h.el.querySelector('.modal-pie'); if (!p) { p = document.createElement('div'); p.className = 'modal-pie'; h.el.appendChild(p); } p.innerHTML = html; } };
     env.addEventListener('click', e => { if (e.target.classList.contains('velo') || e.target.closest('[data-cerrar]')) h.cerrar(); });
@@ -2871,7 +2873,7 @@ const UI = (() => {
     c.innerHTML = `<div class="cajon-cab">${cab}<button class="cerrar" data-cerrar aria-label="Cerrar">${ico('x')}</button></div><div class="cajon-cuerpo">${cuerpo}</div>${pie ? `<div class="cajon-pie">${pie}</div>` : ''}`;
     document.body.append(velo, c);
     requestAnimationFrame(() => requestAnimationFrame(() => { velo.classList.add('vis'); c.classList.add('vis'); }));
-    const h = { el: c, cerrar(rapido) { pila.splice(pila.indexOf(h), 1); if (cajonAct === h) cajonAct = null; velo.classList.remove('vis'); c.classList.remove('vis'); setTimeout(() => { velo.remove(); c.remove(); }, rapido ? 0 : 400); alCerrar?.(); },
+    const h = { el: c, cerrar(rapido) { if (h.cerrado) return; h.cerrado = true; pila.splice(pila.indexOf(h), 1); capasCerradas(); if (cajonAct === h) cajonAct = null; velo.classList.remove('vis'); c.classList.remove('vis'); setTimeout(() => { velo.remove(); c.remove(); }, rapido ? 0 : 400); alCerrar?.(); },
       cuerpo(html) { c.querySelector('.cajon-cuerpo').innerHTML = html; } };
     velo.onclick = () => h.cerrar(); c.querySelector('[data-cerrar]').onclick = () => h.cerrar();
     // Gesto: deslizar hacia abajo para cerrar en el celular
@@ -3103,7 +3105,9 @@ const App = (() => {
     document.title = (NAV.find(n => n.id === st.ruta)?.txt || 'Panel') + " · D'leon Muebles";
   }
   /* Repinta lo necesario cuando cambian los datos */
-  Store.alCambiar(() => { if (!Store.yo() || !$('#app')) return; if (renderPend) return; renderPend = true; requestAnimationFrame(() => { renderPend = false; pintarNav(); pintarCampana(); Vistas[st.ruta]?.refrescar?.(); }); });
+  let sucio = false;
+  document.addEventListener('capas-cerradas', () => { if (!sucio || UI.pila.length || !Store.yo() || !$('#app')) return; sucio = false; const y = scrollY; Vistas[st.ruta]?.refrescar?.(); requestAnimationFrame(() => scrollTo(0, y)); });
+  Store.alCambiar(() => { if (!Store.yo() || !$('#app')) return; if (UI.pila.length) sucio = true; if (renderPend) return; renderPend = true; requestAnimationFrame(() => { renderPend = false; pintarNav(); pintarCampana(); Vistas[st.ruta]?.refrescar?.(); }); });
 
   function atajosAyuda() {
     UI.modal({ titulo: 'Atajos de teclado', ico: 'command', ancho: 'angosto', cuerpo: `<div class="col">${[['Ctrl', 'K', 'Buscar o ir a cualquier pantalla'], ['/', '', 'Buscar'], ['N', '', 'Nueva venta'], ['Esc', '', 'Cerrar ventanas']].map(([a, b, t]) => `<div class="fila"><span class="kbd">${a}</span>${b ? `<span class="kbd">${b}</span>` : ''}<span class="mut">${t}</span></div>`).join('')}</div>` });
