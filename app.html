@@ -1370,24 +1370,52 @@ const Store = (() => {
   });
 
   /* ── Persistencia ─────────────────────────────────────────── */
+  // Los datos van en IndexedDB del navegador (tiene mucho lugar). localStorage es un cajón chico
+  // (~5 MB) que comparten TODAS las demos de wydansolutions.github.io: con varias abiertas se llena.
   // ▶ FIRESTORE: reemplazar por onSnapshot() de cada colección.
-  function cargar() {
+  const BD = (() => {
+    let p = null;
+    const abrir = () => p || (p = new Promise((ok, mal) => {
+      try { const r = indexedDB.open('dleon_' + CLAVE_GUARDADO, 1); r.onupgradeneeded = () => r.result.createObjectStore('datos'); r.onsuccess = () => ok(r.result); r.onerror = () => mal(r.error); r.onblocked = () => mal(new Error('bloqueada')); }
+      catch (e) { mal(e); }
+    }));
+    const op = (modo, f) => abrir().then(base => new Promise((ok, mal) => {
+      const t = base.transaction('datos', modo); const r = f(t.objectStore('datos'));
+      t.oncomplete = () => ok(r && r.result); t.onerror = t.onabort = () => mal(t.error);
+    }));
+    return { leer: (k) => op('readonly', st => st.get(k)), escribir: (k, v) => op('readwrite', st => st.put(v, k)) };
+  })();
+  let sinBD = false, avisoLugar = false;
+  const canal = ('BroadcastChannel' in window) ? new BroadcastChannel('dleon_' + CLAVE_GUARDADO) : null;
+
+  async function cargar() {
     let raw = null;
-    try { raw = localStorage.getItem(CLAVE_GUARDADO); } catch (e) {}
-    if (raw) {
-      try { db = JSON.parse(raw); } catch (e) { db = null; }
-    }
-    if (!db || !db.productos) { db = Ejemplo.generar(); guardarYa(); }
-    else if (db.esEjemplo && db.baseDia !== iso(Date.now())) { correrFechas(); guardarYa(); }
+    try { raw = await BD.leer(CLAVE_GUARDADO); } catch (e) { sinBD = true; }
+    let viejo = null; try { viejo = localStorage.getItem(CLAVE_GUARDADO); } catch (e) {}
+    if (!raw && viejo) raw = viejo;                       // datos de antes de este cambio
+    if (raw) { try { db = JSON.parse(raw); } catch (e) { db = null; } }
+    let guardarAlFinal = false;
+    if (!db || !db.productos) { db = Ejemplo.generar(); guardarAlFinal = true; }
+    else if (db.esEjemplo && db.baseDia !== iso(Date.now())) { correrFechas(); guardarAlFinal = true; }
     if (!db.saldos || !Object.keys(db.saldos).length) recalcularStock(true);
-    if (ponerFotosEjemplo(db)) guardarYa();
+    if (ponerFotosEjemplo(db)) guardarAlFinal = true;
+    if (viejo && !sinBD) { guardarAlFinal = true; try { localStorage.removeItem(CLAVE_GUARDADO); } catch (e) {} }  // libera el cajón chico
+    if (guardarAlFinal) guardarYa();
     cambio(false);
   }
+  function sinLugar() {
+    if (avisoLugar) return; avisoLugar = true;   // se avisa una sola vez
+    UI?.toast?.('Este navegador no tiene más lugar para guardar. Podés seguir usando la página, pero los cambios se pierden al cerrarla. Exportá un respaldo desde Configuración.', 'alerta', { ms: 9000 });
+  }
+  function guardarLS(txt) { try { localStorage.setItem(CLAVE_GUARDADO, txt); } catch (e) { sinLugar(); } }
   function guardarYa() {
-    try { localStorage.setItem(CLAVE_GUARDADO, JSON.stringify(db)); }
-    catch (e) { UI?.toast?.('No hay más lugar en el navegador. Exportá un respaldo desde Configuración.', 'alerta'); }
+    clearTimeout(guardarPend); guardarPend = null;
+    const txt = JSON.stringify(db);
+    if (sinBD) { guardarLS(txt); return; }
+    BD.escribir(CLAVE_GUARDADO, txt).then(() => canal?.postMessage(version)).catch(() => sinLugar());
   }
   function guardar() { clearTimeout(guardarPend); guardarPend = setTimeout(guardarYa, 250); }
+  addEventListener('pagehide', () => { if (guardarPend) guardarYa(); });
   function cambio(persistir = true) { version++; memo.clear(); if (persistir) guardar(); oyentes.forEach(f => { try { f(); } catch (e) { console.error(e); } }); }
   const alCambiar = (f) => (oyentes.add(f), () => oyentes.delete(f));
 
@@ -1412,9 +1440,8 @@ const Store = (() => {
   }
 
   /* Sincroniza entre pestañas (simula dos tiendas operando a la vez) */
-  window.addEventListener('storage', (e) => {
-    if (e.key !== CLAVE_GUARDADO || !e.newValue) return;
-    try { db = JSON.parse(e.newValue); idxMovsProd = null; idxProd = null; cambio(false); UI?.toast?.('Se actualizaron los datos desde otra sesión abierta', 'info'); } catch (er) {}
+  canal?.addEventListener('message', async () => {
+    try { const raw = await BD.leer(CLAVE_GUARDADO); if (!raw) return; db = JSON.parse(raw); idxMovsProd = null; idxProd = null; cambio(false); UI?.toast?.('Se actualizaron los datos desde otra pestaña abierta', 'info'); } catch (er) {}
   });
 
   /* ── Configuración (base + lo editado) ────────────────────── */
@@ -5188,9 +5215,9 @@ Vistas.config = {
     };
   },
   datos(c) {
-    const db = Store.db; let tam = 0; try { tam = (localStorage.getItem(CLAVE_GUARDADO) || '').length; } catch (e) {}
+    const db = Store.db; const tam = Store.exportar().length;
     c.innerHTML = `<div class="grilla g2">
-      <div class="card"><div class="card-cab">${ico('download')}<h3>Respaldo</h3></div><div class="card-cuerpo col" style="gap:10px"><p class="peq mut">Descargá una copia completa. En producción, los respaldos van a la cuenta de Firebase de Wydan.</p><div class="fila wrap"><button class="btn" id="dt-json">${ico('download')} Respaldo completo (JSON)</button><button class="btn" id="dt-xls">${ico('download')} Excel (productos, stock, ventas, gastos)</button></div>
+      <div class="card"><div class="card-cab">${ico('download')}<h3>Respaldo</h3></div><div class="card-cuerpo col" style="gap:10px"><p class="peq mut">Descargá una copia completa. En la versión final, además, te llega un respaldo por correo según tu plan.</p><div class="fila wrap"><button class="btn" id="dt-json">${ico('download')} Respaldo completo (JSON)</button><button class="btn" id="dt-xls">${ico('download')} Excel (productos, stock, ventas, gastos)</button></div>
         <label class="btn" style="width:max-content">${ico('upload')} Restaurar desde JSON<input type="file" accept=".json,application/json" id="dt-rest" hidden></label></div></div>
       <div class="card"><div class="card-cab">${ico('shield')}<h3>Integridad del stock</h3></div><div class="card-cuerpo col" style="gap:10px"><p class="peq mut">Reconstruye todos los saldos desde los ${fmtN(db.movs.length)} movimientos y los compara con la caché.</p><button class="btn" id="dt-rec" style="width:max-content">${ico('refresh')} Recalcular stock</button><div id="dt-rec-r"></div></div></div>
       <div class="card"><div class="card-cab">${ico('info')}<h3>Almacenamiento</h3></div><div class="card-cuerpo"><div class="stat-mini"><div><b>${fmtN(db.productos.length)}</b><span>productos</span></div><div><b>${fmtN(db.movs.length)}</b><span>movimientos</span></div><div><b>${nf1.format(tam / 1048576)} MB</b><span>en este navegador</span></div></div></div></div>
@@ -5468,8 +5495,8 @@ const Impresos = (() => {
 /* ════════════════════════════════════════════════════════════════
    js/99-app — arranque
    ════════════════════════════════════════════════════════════════ */
-(function arrancar() {
-  try { Store.cargar(); }
+(async function arrancar() {
+  try { await Store.cargar(); }
   catch (e) { console.error(e); $('#raiz').innerHTML = '<div class="vacio"><h3>No se pudieron cargar los datos</h3><p>' + esc(e.message) + '</p></div>'; return; }
   if (Store.restaurarSesion()) App.iniciar(); else Bienvenida.mostrar();
 })();
