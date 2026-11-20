@@ -3120,7 +3120,7 @@ const App = (() => {
     // Barra inferior (celular)
     const mov = [...items.filter(n => n.movil).slice(0, 4)];
     $('#barra-inf').innerHTML = mov.map(n => `<button data-r="${n.id}" class="${st.ruta === n.id ? 'act' : ''}">${ico(n.ico)}<span>${n.movil}</span>${n.id === 'stock' && av.stock ? `<span class="b-badge">${av.stock}</span>` : ''}</button>`).join('') + `<button data-mas>${ico('menu')}<span>Más</span></button>`;
-    $('#barra-inf').onclick = e => { const b = e.target.closest('button'); if (!b) return; if (b.dataset.mas) { UI.menu(b, [...items.filter(n => !mov.includes(n)).map(n => ({ txt: n.txt, ico: n.ico, fn: () => ir(n.id) })), { sep: 1 }, { txt: 'Bloquear', ico: 'lock', fn: bloquear }]); return; } ir(b.dataset.r); };
+    $('#barra-inf').onclick = e => { const b = e.target.closest('button'); if (!b) return; if (b.hasAttribute('data-mas')) { UI.menu(b, [...items.filter(n => !mov.includes(n)).map(n => ({ txt: n.txt, ico: n.ico, fn: () => ir(n.id) })), { sep: 1 }, { txt: 'Bloquear', ico: 'lock', fn: bloquear }]); return; } ir(b.dataset.r); };
     requestAnimationFrame(moverInd);
   }
   function moverInd() {
@@ -3171,6 +3171,7 @@ const App = (() => {
     $$('.nav-it', $('#nav')).forEach(a => a.classList.toggle('act', a.dataset.r === st.ruta));
     $('#fab')?.classList.toggle('oculto', st.ruta === 'ventas' && (!st.sub || st.sub === 'nueva'));
     $$('#barra-inf button[data-r]').forEach(a => a.classList.toggle('act', a.dataset.r === st.ruta));
+    $('#barra-inf [data-mas]')?.classList.toggle('act', !Array.from($$('#barra-inf button[data-r]')).some(a => a.dataset.r === st.ruta));
     moverInd();
     const v = Vistas[st.ruta];
     c.innerHTML = `<div class="vista" id="vista"></div>`;
