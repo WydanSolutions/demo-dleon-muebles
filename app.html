@@ -17,7 +17,7 @@
   D'leon Muebles — Página de gestión
   Desarrollado por WYDAN Solutions. Un solo archivo: HTML + CSS + JS.
   Índice de bloques:  css/01-base · css/02-pantallas · js/00-logos · js/01-config · js/02-utils
-  js/03-datos (Store, capa de datos lista para Firebase) · js/04-ejemplo · js/04b-fotos · js/05-ingreso · js/05b-bienvenida · js/06-nav · js/07-avisos
+  js/03-datos (Store, capa de datos lista para Firebase) · js/04-ejemplo · js/04b-fotos · js/04c-vencimientos · js/05-ingreso · js/05b-bienvenida · js/06-nav · js/07-avisos
   js/10-panel · js/11-stock · js/11c-catalogo · js/12-ventas · js/13-gastos · js/14-clientes · js/15-compras · js/16-config · js/17-importar · js/18-impresos · js/99-app
 -->
 <style>
@@ -839,6 +839,32 @@ html, body { overflow-x: clip; }
 .cat-loc { justify-content: center; }
 .cat-precio { white-space: nowrap; }
 
+/* ── Gastos: lo que falta pagar ─────────────────────────────── */
+.pagar-grilla { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.pagar-it { display: flex; flex-direction: column; align-items: flex-start; gap: 3px; padding: 16px 20px; text-align: left; border-right: 1px solid var(--borde); transition: background var(--t-r); }
+.pagar-it:last-child { border-right: 0; }
+.pagar-it:hover { background: var(--fondo-2); }
+.pagar-it .etq { font-size: 12px; font-weight: 650; color: var(--texto-2); text-transform: uppercase; letter-spacing: .04em; }
+.pagar-it b { font-size: 22px; font-weight: 780; letter-spacing: -.02em; }
+.pagar-it .mini { color: var(--texto-3); }
+.pagar-it.alerta { background: linear-gradient(180deg, var(--alerta-suave), #fff 85%); } .pagar-it.alerta b, .pagar-it.alerta .etq { color: var(--alerta); }
+.pagar-it.pend b, .pagar-it.pend .etq { color: var(--pend); }
+.filtro-chip .cuenta { min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; background: var(--fondo-3); font-size: 10.5px; display: inline-grid; place-items: center; margin-left: 4px; font-variant-numeric: tabular-nums; }
+.filtro-chip .cuenta.alerta { background: var(--alerta); color: #fff; }
+.filtro-chip.act .cuenta:not(.alerta) { background: var(--marca-borde); color: var(--marca); }
+.pago-bloque { padding: 14px; border-radius: 14px; background: var(--fondo-2); border: 1px solid var(--borde); }
+@media (max-width: 520px) {
+  .pagar-grilla { grid-template-columns: 1fr; }
+  .pagar-it { border-right: 0; border-bottom: 1px solid var(--borde); padding: 12px 16px; flex-direction: row; flex-wrap: wrap; align-items: baseline; column-gap: 10px; }
+  .pagar-it:last-child { border-bottom: 0; }
+  .pagar-it .etq { flex: 1; } .pagar-it b { font-size: 18px; } .pagar-it .mini { width: 100%; }
+}
+.g-fichas { display: flex; flex-direction: column; }
+.g-ficha { padding: 12px 16px; border-bottom: 1px solid var(--borde); cursor: pointer; }
+.g-ficha:last-child { border-bottom: 0; }
+.g-ficha.vencido { background: linear-gradient(90deg, var(--alerta-suave), #fff 70%); box-shadow: inset 3px 0 0 var(--alerta); }
+.g-ficha .mini { white-space: nowrap; }
+
 /* ════════════════════════════════════════════════════════════════
    css/03-bienvenida — presentación de WYDAN (identidad de Wydan:
    azul marino, gris acero, Poppins e Inter). Los colores de D'leon
@@ -1399,6 +1425,7 @@ const Store = (() => {
     else if (db.esEjemplo && db.baseDia !== iso(Date.now())) { correrFechas(); guardarAlFinal = true; }
     if (!db.saldos || !Object.keys(db.saldos).length) recalcularStock(true);
     if (ponerFotosEjemplo(db)) guardarAlFinal = true;
+    if (prepararVencimientos(db)) guardarAlFinal = true;
     if (viejo && !sinBD) { guardarAlFinal = true; try { localStorage.removeItem(CLAVE_GUARDADO); } catch (e) {} }  // libera el cajón chico
     if (guardarAlFinal) guardarYa();
     cambio(false);
@@ -2035,6 +2062,22 @@ const Store = (() => {
   }
   function borrarGasto(id) { const g = db.gastos.find(x => x.id === id); if (g.loc === 'gen') exigir('gastosTodos'); else exigir('gastos', g.loc); db.gastos = db.gastos.filter(x => x.id !== id); registrar('Gasto eliminado', `${g.cat} · ${fmt$(g.importe)} · ${fmtF(g.fecha)}`); cambio(); return g; }
   function restaurarGasto(g) { db.gastos.push(g); registrar('Gasto restaurado', `${g.cat} · ${fmt$(g.importe)}`); cambio(); }
+  /* Pago de los gastos: fecha (del gasto o la factura), vence (opcional) y pagado (fecha de pago; vacío = falta pagar).
+     Los gastos viejos, sin el dato, se toman como pagados el día del gasto. */
+  function estadoPago(g) {
+    const pag = g.pagado === undefined ? g.fecha : g.pagado;
+    if (pag) return { est: 'pagado', fecha: pag };
+    if (!g.vence) return { est: 'pendiente', dias: null };
+    const d = Math.round((deIso(g.vence) - deIso(iso(Date.now()))) / DIA);
+    return { est: d < 0 ? 'vencido' : d <= 7 ? 'pronto' : 'pendiente', dias: d };
+  }
+  function pagarGasto(id, fecha, forma) {
+    const g = db.gastos.find(x => x.id === id); if (!g) throw new ErrorDato('No se encontró el gasto.');
+    if (g.loc === 'gen') exigir('gastosTodos'); else exigir('gastos', g.loc);
+    g.pagado = fecha || ''; if (forma) g.forma = forma;
+    registrar(fecha ? 'Gasto pagado' : 'Gasto marcado sin pagar', `${g.cat} · ${g.concepto || ''} · ${fmt$(g.importe)}${fecha ? ' · ' + fmtF(fecha) : ''}`); cambio();
+  }
+  const gastosAPagar = (locs) => db.gastos.filter(g => (!locs || locs.includes(g.loc)) && estadoPago(g).est !== 'pagado');
   function recurrentesPendientes() {
     const mk = mesKey(Date.now()); const dia = new Date().getDate();
     return db.recurrentes.filter(r => r.activo && r.ultimo !== mk && dia >= Math.min(r.dia, 28) - 3 && localesFinancieros().concat(esAdmin() ? ['gen'] : []).includes(r.loc));
@@ -2163,7 +2206,7 @@ const Store = (() => {
 
   /* Para importar o restaurar */
   function reemplazarTodo(nuevo) { db = nuevo; idxMovsProd = null; idxProd = null; recalcularStock(true); cambio(); }
-  function volverAEjemplo() { db = Ejemplo.generar(); ponerFotosEjemplo(db); idxMovsProd = null; idxProd = null; guardarYa(); cambio(false); }
+  function volverAEjemplo() { db = Ejemplo.generar(); ponerFotosEjemplo(db); prepararVencimientos(db); idxMovsProd = null; idxProd = null; guardarYa(); cambio(false); }
   function exportar() { return JSON.stringify(db); }
   /* Avisos leídos, por usuario. ▶ FIRESTORE: documento leidos/{uid} */
   function leidosDe() { const u = sesion?.id || '_'; if (!db.leidos || typeof db.leidos !== 'object') db.leidos = {}; if (!db.leidos[u] || typeof db.leidos[u] !== 'object') db.leidos[u] = {}; return db.leidos[u]; }
@@ -2190,7 +2233,7 @@ const Store = (() => {
     transferencia, solicitarTransferencia, enviarTransferencia, crearYEnviar, recibirTransferencia, cancelarTransferencia,
     conteo, crearConteo, anotarConteo, enviarConteo, aprobarConteo, rechazarConteo,
     pedido, guardarPedido, estadoPedido, cantPedida, recibirCompra, pagarProveedor, deudaProveedor, pedirReposicion,
-    guardarGasto, borrarGasto, restaurarGasto, recurrentesPendientes, confirmarRecurrente,
+    guardarGasto, borrarGasto, restaurarGasto, estadoPago, pagarGasto, gastosAPagar, recurrentesPendientes, confirmarRecurrente,
     estadisticasProd, minimo, diasSinVenta, avisosStock, ventasEn, resumenVentas, gastosEn, valorStock, reposicion,
     reemplazarTodo, volverAEjemplo, exportar, marcarLeido, estaLeido,
   };
@@ -2691,6 +2734,39 @@ function ponerFotosEjemplo(db) {
   const rep = repartoFotos(db.productos);
   for (const p of db.productos) { if (p.foto && !p.fotoEj) continue; const k = fotoKey(p); const id = k && rep[k + '|' + norm(p.modelo || p.nombre)]; const u = id ? urlPexels(id) : ''; if (u) { p.foto = u; p.fotoEj = true; } else if (p.fotoEj) { p.foto = ''; delete p.fotoEj; } }
   db.fotosV = FOTOS_V; return true;
+}
+
+/* ════════════════════════════════════════════════════════════════
+   js/04c-vencimientos — vencimientos y pagos en los gastos de ejemplo
+   (solo para la demo). A los gastos de servicios les pone fecha de
+   vencimiento y agrega algunos sin pagar: vencidos y por vencer.
+   Corre una sola vez por copia de datos (PAGOS_V).
+   ════════════════════════════════════════════════════════════════ */
+const PAGOS_V = 1;
+const DIAS_VENCE = { UTE: 10, OSE: 10, Antel: 12, BPS: 0, Alquiler: 5, Impuestos: 0, Publicidad: 15, Fletes: 7 };
+
+function prepararVencimientos(db) {
+  if (!db?.esEjemplo || db.pagosV === PAGOS_V) return false;
+  for (const g of db.gastos) {
+    if (g.pagado !== undefined) continue;
+    const dv = DIAS_VENCE[g.cat];
+    if (dv != null) g.vence = iso(deIso(g.fecha) + dv * DIA);
+    // se pagó el mismo día o unos días después, sin pasarse del vencimiento
+    const atraso = dv ? (g.id.charCodeAt(g.id.length - 1) % (dv + 1)) : 0;
+    g.pagado = iso(Math.min(deIso(g.fecha) + atraso * DIA, Date.now()));
+  }
+  const hoy = deIso(iso(Date.now())); const d = (n) => iso(hoy + n * DIA);
+  const ctx = { seed: true, ts: Date.now(), user: 'admin' };
+  [
+    { fecha: d(-8), vence: d(2), loc: 't1', cat: 'UTE', concepto: 'UTE · Tienda 1', importe: 7930, forma: 'Débito', comp: '4418205' },
+    { fecha: d(-8), vence: d(2), loc: 'dep', cat: 'OSE', concepto: 'OSE · Depósito', importe: 840, forma: 'Débito', comp: '8810452' },
+    { fecha: d(-12), vence: d(-5), loc: 't3', cat: 'BPS', concepto: 'Aportes BPS · Tienda 3', importe: 10650, forma: 'Transferencia', comp: '' },
+    { fecha: d(-10), vence: d(-3), loc: 't2', cat: 'Mantenimiento', concepto: 'Arreglo del aire acondicionado · Frío Norte', importe: 6800, forma: 'Transferencia', comp: 'A 1203', nota: 'Pagar con transferencia, pasaron la cuenta por WhatsApp' },
+    { fecha: d(-3), vence: d(5), loc: 'gen', cat: 'Impuestos', concepto: 'DGI – IVA del mes', importe: 48200, forma: 'Transferencia', comp: '' },
+    { fecha: d(-2), vence: d(13), loc: 'gen', cat: 'Publicidad', concepto: 'Radio · campaña de fin de año', importe: 9500, forma: 'Transferencia', comp: 'B 0458' },
+  ].forEach(x => { try { Store.guardarGasto({ ...x, pagado: '', nota: x.nota || '' }, ctx); } catch (e) { console.error(e); } });
+  db.pagosV = PAGOS_V;
+  return true;
 }
 
 /* ════════════════════════════════════════════════════════════════
@@ -3228,6 +3304,16 @@ const Avisos = (() => {
       r.push({ k: `co:${c.id}`, prio: 1, ico: 'clipboard', cls: 'res', tit: `Conteo de ${Store.local(c.loc).nombre} para aprobar`,
         det: `${plural(c.items.length, 'producto contado', 'productos contados')} · ${dif ? plural(dif, 'diferencia', 'diferencias') : 'sin diferencias'}`, meta: `${c.num} · ${Store.usuario(c.userEnv || c.user).nombre}`, ts: c.tsEnv || c.ts,
         abrir: () => { App.ir('stock', 'conteo'); setTimeout(() => Conteo.abrir(c.id), 80); } });
+    });
+    // Gastos vencidos o que vencen en los próximos 3 días
+    const locsG = Store.esAdmin() ? [...locs, 'gen'] : locs.filter(l => Store.puede('gastos', l));
+    Store.gastosAPagar(locsG).forEach(g => {
+      const e = Store.estadoPago(g); if (e.est === 'pendiente' || (e.est === 'pronto' && e.dias > 3)) return;
+      const venc = e.est === 'vencido';
+      r.push({ k: `ga:${g.id}:${venc ? 'v' : 'p'}`, prio: venc ? 0 : 2, ico: 'wallet', cls: venc ? 'alerta' : 'pend',
+        tit: venc ? `Gasto vencido hace ${plural(-e.dias, 'día', 'días')}` : (e.dias === 0 ? 'Gasto que vence hoy' : e.dias === 1 ? 'Gasto que vence mañana' : `Gasto que vence en ${e.dias} días`),
+        det: `${g.concepto || g.cat} · ${fmt$(g.importe)}`, meta: `${g.cat} · ${g.loc === 'gen' ? 'General' : Store.local(g.loc).nombre} · vence ${fmtF(g.vence)}`, ts: deIso(g.vence),
+        abrir: () => App.ir('gastos', null, { estado: venc ? 'vencidos' : 'apagar' }) });
     });
     const porLoc = {};
     a.sinStock.forEach(x => (porLoc[x.loc] ||= []).push(x));
@@ -4800,76 +4886,172 @@ const POS = {
 };
 
 /* ════════════════════════════════════════════════════════════════
-   js/13-gastos — Gastos por local y generales, recurrentes
+   js/13-gastos — Gastos por local y generales, recurrentes,
+   vencimientos y pagos (fecha · vence · pagado)
    ════════════════════════════════════════════════════════════════ */
+/* Chip del estado de pago de un gasto */
+function chipPago(g) {
+  const e = Store.estadoPago(g);
+  if (e.est === 'pagado') return `<span class="chip ok"><span class="pt"></span>Pagado ${fmtFC(e.fecha)}</span>`;
+  if (e.est === 'vencido') return `<span class="chip alerta"><span class="pt"></span>Vencido hace ${-e.dias} día${e.dias === -1 ? '' : 's'}</span>`;
+  if (e.est === 'pronto') return `<span class="chip pend"><span class="pt"></span>${e.dias === 0 ? 'Vence hoy' : e.dias === 1 ? 'Vence mañana' : 'Vence en ' + e.dias + ' días'}</span>`;
+  return `<span class="chip borde"><span class="pt"></span>Sin pagar</span>`;
+}
+const fmtFC = (f) => { const [, m, d] = String(f).split('-'); return d ? `${+d}/${+m}` : ''; };
+
 Vistas.gastos = {
   render(el, sub, extra) {
-    this.el = el; const admin = Store.esAdmin();
-    const f = UI.recordar('gastos_f', { mes: mesKey(Date.now()), loc: '', cat: '' });
+    this.el = el; this.tope = 40; const admin = Store.esAdmin();
+    const f = UI.recordar('gastos_f', { mes: mesKey(Date.now()), loc: '', cat: '', est: '' });
+    if (extra?.estado) f.est = extra.estado;
     const locsOp = admin ? [...Store.locales().map(l => l.id), 'gen'] : [Store.yo().localId];
     const meses = []; for (let i = 0; i < 7; i++) meses.push(mesKey(inicioMes(Date.now(), -i)));
     el.innerHTML = `<div class="titulo-pag"><div><h1>Gastos</h1><p class="sub">${admin ? 'De cada local y generales de la empresa' : 'Caja chica de ' + esc(Store.local(Store.yo().localId).nombre)}</p></div><div class="acc"><button class="btn" id="g-exp">${ico('download')} Exportar</button><button class="btn prim" id="g-nuevo">${ico('plus')} Cargar gasto</button></div></div>
-      <div id="g-rec"></div>
+      <div id="g-rec"></div><div id="g-pagar"></div>
       <div class="barra-filtros"><select class="sel ch" id="g-mes" style="width:auto">${meses.map(k => `<option value="${k}" ${f.mes === k ? 'selected' : ''}>${mesNombre(k)}</option>`).join('')}<option value="todo" ${f.mes === 'todo' ? 'selected' : ''}>Últimos 6 meses</option></select>
         ${admin ? `<select class="sel ch" id="g-loc" style="width:auto"><option value="">Todos</option>${Store.locales().map(l => `<option value="${l.id}" ${f.loc === l.id ? 'selected' : ''}>${esc(l.nombre)}</option>`).join('')}<option value="gen" ${f.loc === 'gen' ? 'selected' : ''}>Generales</option></select>` : ''}
         <select class="sel ch" id="g-cat" style="width:auto"><option value="">Todas las categorías</option>${Store.cfg().categoriasGasto.map(c => `<option ${f.cat === c ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select></div>
-      <div class="panel-grilla"><div class="card" id="g-t"></div><div class="col" style="gap:16px"><div class="card"><div class="card-cab"><h3>Por categoría</h3><span class="chip borde" id="g-tot"></span></div><div class="card-cuerpo" id="g-cat-g"></div></div>
-        <div class="card"><div class="card-cab"><h3>Comparativo mensual</h3></div><div class="card-cuerpo" id="g-mes-g"></div></div>${admin ? `<div class="card"><div class="card-cab"><h3>Por local</h3></div><div class="card-cuerpo" id="g-loc-g"></div></div>` : ''}</div></div>`;
+      <div class="barra-filtros" id="g-est"></div>
+      <div class="card" id="g-t" style="margin-bottom:16px"></div>
+      <div class="grilla ${admin ? 'g3' : 'g2'}"><div class="card"><div class="card-cab"><h3>Por categoría</h3><span class="chip borde" id="g-tot"></span></div><div class="card-cuerpo" id="g-cat-g"></div></div>
+        <div class="card"><div class="card-cab"><h3>Comparativo mensual</h3></div><div class="card-cuerpo" id="g-mes-g"></div></div>${admin ? `<div class="card"><div class="card-cab"><h3>Por local</h3></div><div class="card-cuerpo" id="g-loc-g"></div></div>` : ''}</div>`;
     let filas = [];
+    const coincide = (g) => (!f.loc || g.loc === f.loc) && (!f.cat || g.cat === f.cat);
     const pintar = () => {
       f.mes = $('#g-mes').value; f.loc = $('#g-loc')?.value || ''; f.cat = $('#g-cat').value; UI.guardarRec('gastos_f', f);
       const [d, h] = f.mes === 'todo' ? [inicioMes(Date.now(), -6), Date.now() + DIA] : [deIso(f.mes + '-01'), inicioMes(deIso(f.mes + '-01'), 1)];
-      filas = Store.gastosEn(d, h, locsOp).filter(g => (!f.loc || g.loc === f.loc) && (!f.cat || g.cat === f.cat)).sort((a, b) => b.fecha.localeCompare(a.fecha));
+      // Lo que falta pagar se ve siempre completo, de cualquier mes
+      const aPagar = Store.gastosAPagar(locsOp).filter(coincide);
+      const vencidos = aPagar.filter(g => Store.estadoPago(g).est === 'vencido');
+      this.resumenPagar(aPagar, vencidos);
+      $('#g-est').innerHTML = [['', 'Todos'], ['apagar', 'Sin pagar', aPagar.length], ['vencidos', 'Vencidos', vencidos.length, 'alerta'], ['pagados', 'Pagados']]
+        .map(([v, t, n, c]) => `<button class="filtro-chip ${f.est === v ? 'act' : ''}" data-v="${v}">${t}${n ? ` <span class="cuenta ${c || ''}">${n}</span>` : ''}</button>`).join('')
+        + (f.est === 'apagar' || f.est === 'vencidos' ? '<span class="esp"></span><span class="mut peq">De todos los meses</span>' : '');
+      $('#g-mes').disabled = f.est === 'apagar' || f.est === 'vencidos';
+      if (f.est === 'apagar') filas = aPagar.slice().sort((a, b) => (a.vence || '9999').localeCompare(b.vence || '9999'));
+      else if (f.est === 'vencidos') filas = vencidos.slice().sort((a, b) => a.vence.localeCompare(b.vence));
+      else filas = Store.gastosEn(d, h, locsOp).filter(coincide).filter(g => f.est !== 'pagados' || Store.estadoPago(g).est === 'pagado').sort((a, b) => b.fecha.localeCompare(a.fecha));
       $('#g-tot').textContent = fmt$(sum(filas, g => g.importe));
-      UI.tabla($('#g-t'), { clave: 'gastos', filas, porPag: 30, clic: g => this.form(g), vacioHtml: UI.vacio('receipt', 'Todavía no hay gastos en este período', '', `<button class="btn prim" onclick="Vistas.gastos.form()">Cargar el primero</button>`), cols: [
+      if (matchMedia('(max-width: 520px)').matches) this.fichas(filas, f); else UI.tabla($('#g-t'), { clave: 'gastos', filas, porPag: 30, clic: g => this.form(g), rowCls: g => Store.estadoPago(g).est === 'vencido' ? 'marcado' : '',
+        vacioHtml: f.est === 'apagar' || f.est === 'vencidos' ? UI.vacio('receipt', f.est === 'vencidos' ? 'No hay gastos vencidos' : 'No queda nada por pagar', 'Todo al día.') : UI.vacio('receipt', 'Todavía no hay gastos en este período', '', `<button class="btn prim" onclick="Vistas.gastos.form()">Cargar el primero</button>`), cols: [
         { k: 'fecha', t: 'Fecha', html: g => fmtF(g.fecha), v: g => g.fecha },
         { k: 'cat', t: 'Categoría', html: g => `<div class="semi peq">${esc(g.cat)}</div><div class="mini mut trunc" style="max-width:200px">${esc(g.concepto || '')}</div>`, v: g => g.cat },
         ...(admin ? [{ k: 'loc', t: 'Local', html: g => g.loc === 'gen' ? '<span class="chip">General</span>' : locChip(g.loc), v: g => g.loc }] : []),
-        { k: 'forma', t: 'Pago', html: g => `<span class="peq">${esc(g.forma || '')}</span>${g.comp ? `<div class="mini mut">Comp. ${esc(g.comp)}</div>` : ''}${g.foto ? ` <span class="chip borde">${ico('camera', 's')}</span>` : ''}`, ord: false },
+        { k: 'vence', t: 'Vence', html: g => g.vence ? `<span class="peq">${fmtF(g.vence)}</span>` : '<span class="mut peq">—</span>', v: g => g.vence || '' },
+        { k: 'pago', t: 'Pago', html: g => `${chipPago(g)}<div class="mini mut" style="margin-top:3px">${esc(g.forma || '')}${g.comp ? ' · Comp. ' + esc(g.comp) : ''}${g.foto ? ' · ' + ico('camera', 's') : ''}</div>`, v: g => { const e = Store.estadoPago(g); return e.est === 'pagado' ? '9' + e.fecha : (e.dias ?? 999) + 5000; } },
         { k: 'importe', t: 'Importe', n: true, html: g => `<b class="num">${fmt$(g.importe)}</b>`, v: g => g.importe },
-        { k: 'x', t: '', ord: false, w: '1%', html: g => `<button class="btn ch fant ico-b" data-borrar="${g.id}" aria-label="Eliminar">${ico('trash', 's')}</button>` },
-      ], pie: (fs) => `<td colspan="${admin ? 4 : 3}">Total del período</td><td class="n num">${fmt$(sum(fs, g => g.importe))}</td><td></td>` });
+        { k: 'x', t: '', ord: false, w: '1%', html: g => `<span class="fila g4" style="justify-content:flex-end;flex-wrap:nowrap">${Store.estadoPago(g).est !== 'pagado' ? `<button class="btn ch prim" data-pagar="${g.id}">${ico('check', 's')} Pagar</button>` : ''}<button class="btn ch fant ico-b" data-borrar="${g.id}" aria-label="Eliminar">${ico('trash', 's')}</button></span>` },
+      ], pie: (fs) => `<td colspan="${admin ? 5 : 4}">Total</td><td class="n num">${fmt$(sum(fs, g => g.importe))}</td><td></td>` });
       $$('[data-borrar]', el).forEach(b => b.onclick = e => { e.stopPropagation(); UI.confirmar({ titulo: 'Eliminar gasto', texto: 'Queda registrado en la actividad.', ok: 'Eliminar', peligro: true, ico: 'trash' }).then(ok => { if (!ok) return; const g = UI.hacer(() => Store.borrarGasto(b.dataset.borrar)); if (g) UI.toast('Gasto eliminado', 'ok', { accion: { txt: 'Deshacer', fn: () => Store.restaurarGasto(g) } }); }); });
+      $$('[data-pagar]', el).forEach(b => b.onclick = e => { e.stopPropagation(); this.pagar(b.dataset.pagar); });
       const porCat = Object.entries(groupBy(filas, g => g.cat)).map(([c, xs]) => ({ l: c, v: sum(xs, x => x.importe) })).sort((a, b) => b.v - a.v).map((x, i) => ({ ...x, c: PALETA_GASTOS[i % PALETA_GASTOS.length] }));
       $('#g-cat-g').innerHTML = porCat.length ? Graf.horiz(porCat, { ancho: 380 }) : '<p class="mut peq">Sin datos</p>';
-      const comp = meses.slice().reverse().map(k => { const a = deIso(k + '-01'); return { l: mesNombre(k), v: [sum(Store.gastosEn(a, inicioMes(a, 1), locsOp).filter(g => (!f.loc || g.loc === f.loc) && (!f.cat || g.cat === f.cat)), g => g.importe)] }; });
+      const comp = meses.slice().reverse().map(k => { const a = deIso(k + '-01'); return { l: mesNombre(k), v: [sum(Store.gastosEn(a, inicioMes(a, 1), locsOp).filter(coincide), g => g.importe)] }; });
       $('#g-mes-g').innerHTML = Graf.barras(comp, [{ n: 'Gastos', c: '#1C1917' }], { alto: 180 });
       if (admin) $('#g-loc-g').innerHTML = Graf.horiz([...Store.locales().map(l => ({ l: l.nombre, v: sum(filas.filter(g => g.loc === l.id), g => g.importe), c: l.color })), { l: 'Generales', v: sum(filas.filter(g => g.loc === 'gen'), g => g.importe), c: '#D6D0C8' }], { ancho: 380 });
       UI.observar(el);
     };
+    this.ponerFiltro = (v) => { if (!$('#g-mes')) return; f.est = v; pintar(); };
     $$('#g-mes, #g-loc, #g-cat', el).forEach(x => x && (x.onchange = pintar));
+    $('#g-est').onclick = e => { const b = e.target.closest('[data-v]'); if (b) this.ponerFiltro(b.dataset.v); };
     $('#g-nuevo').onclick = () => this.form();
-    $('#g-exp').onclick = () => Exportar.excel('gastos', filas.map(g => ({ Fecha: fmtF(g.fecha), Local: g.loc === 'gen' ? 'General' : Store.local(g.loc).nombre, Categoría: g.cat, Concepto: g.concepto, Importe: g.importe, Forma: g.forma, Comprobante: g.comp, Nota: g.nota })));
+    $('#g-exp').onclick = () => Exportar.excel('gastos', filas.map(g => { const e = Store.estadoPago(g); return { Fecha: fmtF(g.fecha), Local: g.loc === 'gen' ? 'General' : Store.local(g.loc).nombre, Categoría: g.cat, Concepto: g.concepto, Importe: g.importe, Vence: g.vence ? fmtF(g.vence) : '', Pagado: e.est === 'pagado' ? fmtF(e.fecha) : '', Estado: { pagado: 'Pagado', vencido: 'Vencido', pronto: 'Por vencer', pendiente: 'Sin pagar' }[e.est], Forma: g.forma, Comprobante: g.comp, Nota: g.nota }; }));
     this.recurrentes(); pintar();
     if (extra?.nuevo) this.form();
   },
   refrescar() { if (!UI.pila.length) this.render(this.el); },
+  /* En el celular: una ficha por gasto, con el estado y el botón «Pagar» a la vista */
+  fichas(filas, f) {
+    const c = $('#g-t'); const tope = this.tope || 40;
+    if (!filas.length) { c.innerHTML = UI.vacio('receipt', f.est === 'vencidos' ? 'No hay gastos vencidos' : f.est === 'apagar' ? 'No queda nada por pagar' : 'No hay gastos en este período'); return; }
+    c.innerHTML = `<div class="g-fichas">${filas.slice(0, tope).map(g => { const e = Store.estadoPago(g); return `<div class="g-ficha ${e.est === 'vencido' ? 'vencido' : ''}" data-g="${g.id}">
+      <div class="fila" style="align-items:flex-start"><div class="esp" style="min-width:0"><div class="semi trunc">${esc(g.concepto || g.cat)}</div><div class="mini mut">${esc(g.cat)} · ${g.loc === 'gen' ? 'General' : esc(Store.local(g.loc).nombre)} · ${fmtF(g.fecha)}</div></div><b class="num">${fmt$(g.importe)}</b></div>
+      <div class="fila" style="margin-top:8px">${chipPago(g)}${g.vence ? `<span class="mini mut">vence ${fmtF(g.vence)}</span>` : ''}<span class="esp"></span>${e.est !== 'pagado' ? `<button class="btn ch prim" data-pagar="${g.id}">${ico('check', 's')} Pagar</button>` : ''}</div></div>`; }).join('')}</div>
+      <div class="fila" style="padding:12px 16px;border-top:1px solid var(--borde)"><span class="esp semi">Total</span><b class="num">${fmt$(sum(filas, g => g.importe))}</b></div>
+      ${filas.length > tope ? `<div style="padding:0 16px 14px"><button class="btn ch" style="width:100%" id="g-mas">Ver ${Math.min(40, filas.length - tope)} más</button></div>` : ''}`;
+    $$('[data-g]', c).forEach(x => x.onclick = e => { if (!e.target.closest('[data-pagar]')) this.form(Store.db.gastos.find(g => g.id === x.dataset.g)); });
+    $('#g-mas')?.addEventListener('click', () => { this.tope = tope + 40; this.fichas(filas, f); $$('[data-pagar]', c).forEach(b => b.onclick = ev => { ev.stopPropagation(); this.pagar(b.dataset.pagar); }); });
+  },
+  /* Tarjeta «Para pagar»: vencidos, los que vencen en 7 días y el total */
+  resumenPagar(aPagar, vencidos) {
+    const c = $('#g-pagar'); if (!c) return;
+    if (!aPagar.length) { c.innerHTML = ''; return; }
+    const pronto = aPagar.filter(g => Store.estadoPago(g).est === 'pronto');
+    const prox = aPagar.filter(g => g.vence && Store.estadoPago(g).est !== 'vencido').sort((a, b) => a.vence.localeCompare(b.vence))[0];
+    c.innerHTML = `<div class="card pagar-card entra" style="margin-bottom:16px"><div class="pagar-grilla">
+      <button class="pagar-it ${vencidos.length ? 'alerta' : ''}" data-f="vencidos"><span class="etq">Vencidos</span><b class="num">${fmt$(sum(vencidos, g => g.importe))}</b><span class="mini">${vencidos.length ? vencidos.length + ' gasto' + (vencidos.length > 1 ? 's' : '') + ' · pagalos cuanto antes' : 'Ninguno'}</span></button>
+      <button class="pagar-it ${pronto.length ? 'pend' : ''}" data-f="apagar"><span class="etq">Vencen en 7 días</span><b class="num">${fmt$(sum(pronto, g => g.importe))}</b><span class="mini">${pronto.length ? pronto.length + ' gasto' + (pronto.length > 1 ? 's' : '') + (prox ? ' · el próximo ' + (Store.estadoPago(prox).dias === 0 ? 'hoy' : fmtF(prox.vence)) : '') : 'Ninguno'}</span></button>
+      <button class="pagar-it" data-f="apagar"><span class="etq">Total sin pagar</span><b class="num">${fmt$(sum(aPagar, g => g.importe))}</b><span class="mini">${aPagar.length} gasto${aPagar.length > 1 ? 's' : ''} en total</span></button>
+    </div></div>`;
+    $$('[data-f]', c).forEach(b => b.onclick = () => this.ponerFiltro(b.dataset.f));
+  },
+  /* Registrar el pago de un gasto que estaba pendiente */
+  pagar(id) {
+    const g = Store.db.gastos.find(x => x.id === id); if (!g) return;
+    const e = Store.estadoPago(g);
+    const m = UI.modal({ titulo: 'Registrar el pago', sub: `${g.concepto || g.cat} · ${fmt$(g.importe)}`, ico: 'check', ancho: 'angosto', cuerpo: `<div class="col" style="gap:14px">
+      ${g.vence ? `<div class="caja fila ${e.est === 'vencido' ? 'alerta' : ''}">${ico('calendar')}<span class="peq">Vence el <b>${fmtF(g.vence)}</b>${e.est === 'vencido' ? ` · hace ${-e.dias} día${e.dias === -1 ? '' : 's'}` : ''}</span></div>` : ''}
+      <div class="campo"><label>Fecha de pago</label><input class="inp" type="date" id="gp-f" value="${iso(Date.now())}"></div>
+      <div class="campo"><label>Forma de pago</label><select class="sel" id="gp-fp">${Store.cfg().formasPago.map(x => `<option ${g.forma === x ? 'selected' : ''}>${x}</option>`).join('')}</select></div></div>`,
+      pie: `<button class="btn" data-cerrar>Cancelar</button><button class="btn prim" id="gp-ok">${ico('check')} Marcar pagado</button>` });
+    m.el.querySelector('#gp-ok').onclick = () => {
+      const fecha = m.el.querySelector('#gp-f').value; if (!fecha) { m.el.querySelector('#gp-f').classList.add('invalido'); return; }
+      const formaAntes = g.forma;
+      if (UI.hacer(() => Store.pagarGasto(id, fecha, m.el.querySelector('#gp-fp').value))) {
+        m.cerrar();
+        UI.toast(`Pago registrado · ${esc(g.concepto || g.cat)}`, 'ok', { accion: { txt: 'Deshacer', fn: () => Store.pagarGasto(id, '', formaAntes) } });
+      }
+    };
+  },
   recurrentes() {
     const rp = Store.recurrentesPendientes(); const c = $('#g-rec'); if (!c) return;
     c.innerHTML = rp.length ? `<div class="card entra" style="margin-bottom:16px;border-color:var(--tra-borde)"><div class="card-cab">${ico('refresh')}<h3>Gastos recurrentes para confirmar este mes</h3><span class="chip tra">${rp.length}</span></div>${rp.map(r => `<div class="fila" style="padding:12px 20px;border-bottom:1px solid var(--borde)"><div class="esp"><div class="semi">${esc(r.concepto)}</div><div class="mini mut">${esc(r.cat)} · ${r.loc === 'gen' ? 'General' : esc(Store.local(r.loc).nombre)} · todos los días ${r.dia}</div></div><input class="inp ch num" type="number" value="${r.importe}" data-ri="${r.id}" style="width:120px"><button class="btn ch prim" data-rc="${r.id}">${ico('check', 's')} Confirmar</button></div>`).join('')}</div>` : '';
     $$('[data-rc]', c).forEach(b => b.onclick = () => UI.hacer(() => Store.confirmarRecurrente(b.dataset.rc, +c.querySelector(`[data-ri="${b.dataset.rc}"]`).value), 'Gasto recurrente confirmado'));
   },
   form(g = null) {
-    const admin = Store.esAdmin(); const v = g || { fecha: iso(Date.now()), loc: admin ? (App.locUnico() || 'gen') : Store.yo().localId, cat: '', concepto: '', importe: '', forma: 'Efectivo', comp: '', nota: '', foto: '' };
+    const admin = Store.esAdmin();
+    const v = g || { fecha: iso(Date.now()), loc: admin ? (App.locUnico() || 'gen') : Store.yo().localId, cat: '', concepto: '', importe: '', forma: 'Efectivo', comp: '', nota: '', foto: '', vence: '', pagado: iso(Date.now()) };
+    const pagadoAhora = Store.estadoPago(v).est === 'pagado';
+    const fechaPago = v.pagado === undefined ? v.fecha : (v.pagado || iso(Date.now()));
     const m = UI.modal({ titulo: g ? 'Editar gasto' : 'Cargar gasto', ico: 'wallet', cuerpo: `<div class="grilla g2" style="gap:14px">
-      <div class="campo"><label>Fecha</label><input class="inp" type="date" id="gf-f" value="${v.fecha}"></div>
+      <div class="campo"><label>Fecha del gasto</label><input class="inp" type="date" id="gf-f" value="${v.fecha}"><div class="ayuda">La de la factura o el recibo</div></div>
+      <div class="campo"><label>Vence <span class="mut" style="font-weight:500">(opcional)</span></label><input class="inp" type="date" id="gf-v" value="${v.vence || ''}"><div class="ayuda">Hasta cuándo hay plazo para pagar</div></div>
       <div class="campo"><label>Local</label><select class="sel" id="gf-l" ${admin ? '' : 'disabled'}>${(admin ? Store.locales() : [Store.local(Store.yo().localId)]).map(l => `<option value="${l.id}" ${v.loc === l.id ? 'selected' : ''}>${esc(l.nombre)}</option>`).join('')}${admin ? `<option value="gen" ${v.loc === 'gen' ? 'selected' : ''}>General de la empresa</option>` : ''}</select></div>
       <div class="campo"><label>Categoría <span class="alerta-t">*</span></label><select class="sel" id="gf-c"><option value="">Elegí…</option>${Store.cfg().categoriasGasto.map(c => `<option ${v.cat === c ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select></div>
       <div class="campo"><label>Importe ($) <span class="alerta-t">*</span></label><input class="inp num" type="number" id="gf-i" value="${v.importe}" inputmode="decimal"></div>
-      <div class="campo" style="grid-column:1/-1"><label>Proveedor / concepto</label><input class="inp" id="gf-co" value="${esc(v.concepto)}" placeholder="Ej.: UTE local Centro"></div>
-      <div class="campo"><label>Forma de pago</label><select class="sel" id="gf-fp">${Store.cfg().formasPago.map(x => `<option ${v.forma === x ? 'selected' : ''}>${x}</option>`).join('')}</select></div>
       <div class="campo"><label>N.º de comprobante</label><input class="inp" id="gf-cp" value="${esc(v.comp)}"></div>
+      <div class="campo" style="grid-column:1/-1"><label>Proveedor / concepto</label><input class="inp" id="gf-co" value="${esc(v.concepto)}" placeholder="Ej.: UTE local Centro"></div>
+      <div class="campo pago-bloque" style="grid-column:1/-1"><label>¿Ya está pagado?</label>
+        ${UI.seg([{ v: 'si', txt: 'Sí, ya se pagó', ico: 'check' }, { v: 'no', txt: 'No, falta pagar', ico: 'clock' }], pagadoAhora ? 'si' : 'no', { id: 'gf-pg', cls: 'lleno' })}
+        <div class="grilla g2" style="gap:14px;margin-top:12px">
+          <div class="campo" id="gf-pf-c"><label>Fecha de pago</label><input class="inp" type="date" id="gf-pf" value="${fechaPago}"></div>
+          <div class="campo"><label id="gf-fp-l">${pagadoAhora ? 'Forma de pago' : 'Se va a pagar con'}</label><select class="sel" id="gf-fp">${Store.cfg().formasPago.map(x => `<option ${v.forma === x ? 'selected' : ''}>${x}</option>`).join('')}</select></div>
+        </div>
+        <div class="caja pend fila oculto" id="gf-sinv" style="margin-top:10px">${ico('info')}<span class="peq">Poné la fecha de vencimiento para que te avisemos antes de que venza.</span></div>
+      </div>
       <label class="foto-sub" style="grid-column:1/-1"><input type="file" accept="image/*" capture="environment" id="gf-foto" hidden>${ico('camera')}<span class="esp">Foto del comprobante (opcional)</span><span id="gf-fp-prev">${v.foto ? `<img src="${v.foto}">` : ''}</span></label>
       <div class="campo" style="grid-column:1/-1"><label>Nota</label><input class="inp" id="gf-n" value="${esc(v.nota)}"></div>
       ${!g && admin ? `<label class="chk" style="grid-column:1/-1"><input type="checkbox" id="gf-rec"> Repetir todos los meses (gasto recurrente)</label>` : ''}</div>`,
       pie: `<button class="btn" data-cerrar>Cancelar</button><button class="btn prim" id="gf-ok">${ico('check')} Guardar</button>` });
+    const q = (s) => m.el.querySelector(s);
+    let pagado = pagadoAhora;
+    const ajustar = () => {
+      q('#gf-pf-c').classList.toggle('oculto', !pagado);
+      q('#gf-fp-l').textContent = pagado ? 'Forma de pago' : 'Se va a pagar con';
+      q('#gf-sinv').classList.toggle('oculto', pagado || !!q('#gf-v').value);
+    };
+    UI.activarSeg(q('#gf-pg'), x => { pagado = x === 'si'; if (pagado && !q('#gf-pf').value) q('#gf-pf').value = iso(Date.now()); ajustar(); });
+    q('#gf-v').addEventListener('input', ajustar);
+    ajustar();
     let foto = v.foto || '';
-    m.el.querySelector('#gf-foto').onchange = async e => { const f = e.target.files[0]; if (f) { foto = await reducirFoto(f, 900, .7); m.el.querySelector('#gf-fp-prev').innerHTML = `<img src="${foto}">`; } };
-    m.el.querySelector('#gf-ok').onclick = () => {
-      const d = { ...(g || {}), fecha: m.el.querySelector('#gf-f').value, loc: m.el.querySelector('#gf-l').value, cat: m.el.querySelector('#gf-c').value, importe: +m.el.querySelector('#gf-i').value, concepto: m.el.querySelector('#gf-co').value.trim(), forma: m.el.querySelector('#gf-fp').value, comp: m.el.querySelector('#gf-cp').value.trim(), nota: m.el.querySelector('#gf-n').value.trim(), foto };
-      if (!d.cat) m.el.querySelector('#gf-c').classList.add('invalido'); if (!(d.importe > 0)) m.el.querySelector('#gf-i').classList.add('invalido');
-      if (UI.hacer(() => Store.guardarGasto(d), g ? 'Gasto actualizado' : 'Gasto cargado')) {
-        if (m.el.querySelector('#gf-rec')?.checked) { Store.db.recurrentes.push({ id: uid('rec'), cat: d.cat, concepto: d.concepto || d.cat, importe: d.importe, loc: d.loc, dia: new Date(deIso(d.fecha)).getDate(), forma: d.forma, activo: true, ultimo: mesKey(deIso(d.fecha)) }); Store.cambio(); }
+    q('#gf-foto').onchange = async e => { const f = e.target.files[0]; if (f) { foto = await reducirFoto(f, 900, .7); q('#gf-fp-prev').innerHTML = `<img src="${foto}">`; } };
+    q('#gf-ok').onclick = () => {
+      const d = { ...(g || {}), fecha: q('#gf-f').value, vence: q('#gf-v').value, pagado: pagado ? (q('#gf-pf').value || iso(Date.now())) : '', loc: q('#gf-l').value, cat: q('#gf-c').value, importe: +q('#gf-i').value, concepto: q('#gf-co').value.trim(), forma: q('#gf-fp').value, comp: q('#gf-cp').value.trim(), nota: q('#gf-n').value.trim(), foto };
+      if (!d.cat) q('#gf-c').classList.add('invalido'); if (!(d.importe > 0)) q('#gf-i').classList.add('invalido');
+      if (!d.fecha) { q('#gf-f').classList.add('invalido'); return; }
+      if (d.vence && d.vence < d.fecha) { q('#gf-v').classList.add('invalido'); UI.toast('El vencimiento no puede ser antes de la fecha del gasto.', 'alerta'); return; }
+      if (UI.hacer(() => Store.guardarGasto(d), g ? 'Gasto actualizado' : (pagado ? 'Gasto cargado' : 'Gasto cargado · queda para pagar'))) {
+        if (q('#gf-rec')?.checked) { Store.db.recurrentes.push({ id: uid('rec'), cat: d.cat, concepto: d.concepto || d.cat, importe: d.importe, loc: d.loc, dia: new Date(deIso(d.fecha)).getDate(), forma: d.forma, activo: true, ultimo: mesKey(deIso(d.fecha)) }); Store.cambio(); }
         m.cerrar();
       }
     };
